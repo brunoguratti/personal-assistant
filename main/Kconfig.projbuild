@@ -177,6 +177,9 @@ choice BOARD_TYPE
     config BOARD_TYPE_BREAD_COMPACT_WIFI_CAM
         bool "Bread Compact Wi-Fi + LCD + Camera (面包板)"
         depends on IDF_TARGET_ESP32S3
+    config BOARD_TYPE_CUSTOM_FREENOVE_S3_2_8_LCD
+        bool "Custom Freenove ESP32-S3 2.8-inch LCD"
+        depends on IDF_TARGET_ESP32S3
     config BOARD_TYPE_DF_S3_AI_CAM
         bool "DFRobot ESP32-S3 AI Camera Module"
         depends on IDF_TARGET_ESP32S3
