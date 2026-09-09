@@ -4,8 +4,6 @@
 #include <string>
 #include "board.h"
 #include "secrets.h"
-// In your tool callback:
-std::string api_key = FIRECRAWL_API_KEY;
 
 static const char* TAG = "WebSearch";
 

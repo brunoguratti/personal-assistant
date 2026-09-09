@@ -8,7 +8,7 @@
             "description": "Freenove ESP32-S3 with 2.8-inch ILI9341 LCD and INMP441/MAX98357A",
             "flash_size": "16MB",
             "sdkconfig_append": [
-                "CONFIG_ESP32S3_SPIRAM_SUPPORT=y",
+                "CONFIG_SPIRAM=y",
                 "CONFIG_SPIRAM_MODE_OCT=y"
             ]
         }
