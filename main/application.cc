@@ -4,14 +4,11 @@
 #include "audio_codec.h"
 #include "board.h"
 #include "display.h"
-#include "email_notify.h"
 #include "mcp_server.h"
 #include "mqtt_protocol.h"
 #include "settings.h"
 #include "system_info.h"
 #include "text_glyph_payload.h"
-#include "weather_client.h"
-#include "web_search.h"
 #include "websocket_protocol.h"
 
 #include <driver/gpio.h>
@@ -105,11 +102,6 @@ void Application::Initialize() {
     auto& mcp_server = McpServer::GetInstance();
     mcp_server.AddCommonTools();
     mcp_server.AddUserOnlyTools();
-
-    // Register custom tools
-    RegisterEmailNotifyTool(mcp_server);
-    RegisterWeatherTool(mcp_server);
-    RegisterWebSearchTool(mcp_server);
 
     // Set network event callback for UI updates and network state handling
     board.SetNetworkEventCallback([this](NetworkEvent event, const std::string& data) {

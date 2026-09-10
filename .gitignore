@@ -20,3 +20,4 @@ mmap_generate_*.h
 .clangd
 main/secrets.h
 main/tools/secrets.h
+build.log

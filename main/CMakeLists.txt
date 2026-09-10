@@ -40,9 +40,6 @@ set(SOURCES "audio/audio_codec.cc"
             "settings.cc"
             "device_state_machine.cc"
             "assets.cc"
-            "tools/weather_client.cc"
-            "tools/email_notify.cc"
-            "tools/web_search.cc"
             "main.cc"
             )
 
