@@ -3,6 +3,7 @@
 #include "assets/lang_config.h"
 #include "audio_codec.h"
 #include "board.h"
+#include "device_timer.h"
 #include "display.h"
 #include "mcp_server.h"
 #include "mqtt_protocol.h"
@@ -102,6 +103,10 @@ void Application::Initialize() {
     auto& mcp_server = McpServer::GetInstance();
     mcp_server.AddCommonTools();
     mcp_server.AddUserOnlyTools();
+
+    ESP_LOGI(TAG, "Registering custom DeviceTimer MCP tools");
+    RegisterDeviceTimerTools(mcp_server);
+    ESP_LOGI(TAG, "Custom DeviceTimer MCP tools registered");
 
     // Set network event callback for UI updates and network state handling
     board.SetNetworkEventCallback([this](NetworkEvent event, const std::string& data) {

@@ -39,11 +39,12 @@ set(SOURCES "audio/audio_codec.cc"
             "ota.cc"
             "settings.cc"
             "device_state_machine.cc"
+            "tools/device_timer.cc"
             "assets.cc"
             "main.cc"
             )
 
-set(INCLUDE_DIRS "." "display" "tools" "display/lvgl_display" "display/lvgl_display/jpg" "audio" "audio/demuxer" "protocols")
+set(INCLUDE_DIRS "." "tools" "display" "display/lvgl_display" "display/lvgl_display/jpg" "audio" "audio/demuxer" "protocols")
 
 # Add board common files
 list(APPEND SOURCES
