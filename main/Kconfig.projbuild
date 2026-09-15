@@ -6,6 +6,20 @@ config OTA_URL
     help
         The application will access this URL to check for new firmwares and server address.
 
+config PERSONAL_GATEWAY_BASE_URL
+    string "Personal gateway base URL"
+    default "http://192.168.50.170:8765"
+    help
+        Base URL for the authenticated Personal MCP Dashboard API running
+        on the local Mac mini.
+
+config PERSONAL_GATEWAY_BEARER_TOKEN
+    string "Personal gateway dashboard bearer token"
+    default ""
+    help
+        Bearer token used only by the device when it requests the Personal
+        MCP Dashboard API. Do not put this value in dashboard HTML or Git.
+
 choice
     prompt "Flash Assets"
     default FLASH_DEFAULT_ASSETS if !USE_EMOTE_MESSAGE_STYLE

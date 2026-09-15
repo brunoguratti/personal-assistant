@@ -8,6 +8,7 @@
 #include "mcp_server.h"
 #include "mqtt_protocol.h"
 #include "settings.h"
+#include "status_web_server.h"
 #include "system_info.h"
 #include "text_glyph_payload.h"
 #include "websocket_protocol.h"
@@ -290,6 +291,7 @@ void Application::Run() {
 
 void Application::HandleNetworkConnectedEvent() {
     ESP_LOGI(TAG, "Network connected");
+    StatusWebServer::GetInstance().Start();
     auto state = GetDeviceState();
 
     if (state == kDeviceStateStarting || state == kDeviceStateWifiConfiguring) {

@@ -35,6 +35,7 @@ set(SOURCES "audio/audio_codec.cc"
             "protocols/websocket_protocol.cc"
             "mcp_server.cc"
             "system_info.cc"
+            "status_web_server.cc"
             "application.cc"
             "ota.cc"
             "settings.cc"
@@ -1074,6 +1075,8 @@ idf_component_register(SRCS ${SOURCES}
                         esp_pm
                         esp_psram
                         esp_netif
+                        esp_http_server
+                        esp_http_client
                         esp_eth
                         esp_driver_gpio
                         esp_driver_uart
