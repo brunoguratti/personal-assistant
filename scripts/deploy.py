@@ -14,7 +14,9 @@ import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-ROOT = Path(__file__).resolve().parent.parent
+SCRIPT_DIR = Path(__file__).resolve().parent
+ROOT = SCRIPT_DIR.parent
+BUILD_LOG_DIR = ROOT / "build" / "log"
 
 DEFAULT_IDF_EXPORT_PATHS = [
     Path("~/Projects/esp/esp-idf-v6.0.2/export.sh").expanduser(),
@@ -186,66 +188,141 @@ def run_command(command: List[str], cwd: Path = ROOT) -> int:
         return 130
 
 
+def show_build_errors() -> None:
+    """Print likely compiler/linker errors from the newest ESP-IDF build logs."""
+    if not BUILD_LOG_DIR.is_dir():
+        print(f"\nNo ESP-IDF log directory found: {BUILD_LOG_DIR}")
+        return
+
+    log_files = sorted(
+        BUILD_LOG_DIR.glob("idf_py_*output_*"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )[:2]
+
+    if not log_files:
+        print(f"\nNo idf.py output logs found in: {BUILD_LOG_DIR}")
+        return
+
+    print("\n" + "-" * 50)
+    print("Recent build errors")
+    print("-" * 50)
+
+    command = [
+        "grep",
+        "-nEi",
+        r"error:|fatal error:|undefined reference|not declared|failed",
+        *map(str, log_files),
+    ]
+
+    try:
+        subprocess.run(command, cwd=ROOT, check=False)
+    except OSError as exc:
+        print(f"Could not read build logs: {exc}")
+
 def main() -> None:
     print("=" * 60)
-    print("   🤖 XiaoZhi ESP32 Build, Flash & Monitor Assistant")
+    print("   XiaoZhi ESP32 Build, Flash & Monitor Assistant")
     print("=" * 60)
 
     print("\nSelect an action:")
-    print("  [1] \033[1;32mBuild + Flash + Monitor\033[0m")
-    print("  [2] \033[1;36mJust Monitor\033[0m")
+    print("  [1] Build + Flash + Monitor")
+    print("  [2] Build only")
+    print("  [3] Flash only")
+    print("  [4] Monitor only")
     print("  [q] Quit")
 
     while True:
-        action = input("\nEnter choice [1/2/q]: ").strip().lower()
+        action = input("\nEnter choice [1/2/3/4/q]: ").strip().lower()
         if action in ("q", "quit"):
             print("Exiting.")
             return
-        if action in ("1", "2"):
+        if action in ("1", "2", "3", "4"):
             break
-        print("Invalid choice. Please enter 1, 2, or q.")
+        print("Invalid choice. Please enter 1, 2, 3, 4, or q.")
 
     if not auto_load_esp_idf():
-        print("\n❌ Could not automatically load ESP-IDF export.sh.")
-        print("   Expected ESP-IDF at ~/Projects/esp/esp-idf-v6.0.2/")
+        print("\nCould not automatically load ESP-IDF export.sh.")
+        print("Expected ESP-IDF at ~/Projects/esp/esp-idf-v6.0.2/")
         sys.exit(1)
 
     idf_python = get_idf_python()
     if not idf_python:
-        print("\n❌ Could not locate the ESP-IDF Python interpreter.")
-        print("   IDF_PYTHON_ENV_PATH was not set to a valid environment.")
+        print("\nCould not locate the ESP-IDF Python interpreter.")
+        print("IDF_PYTHON_ENV_PATH was not set to a valid environment.")
         sys.exit(1)
 
-    print(f"🐍 Using ESP-IDF Python: \033[1;32m{idf_python}\033[0m")
+    print(f"Using ESP-IDF Python: {idf_python}")
 
+    # Only Build does not need an ESP32 plugged in.
+    if action == "2":
+        board = get_target_board()
+
+        print("\n" + "-" * 50)
+        print(f"Building board '{board}'...")
+        print("-" * 50)
+
+        sys.exit(
+            run_command(
+                [idf_python, "scripts/build.py", board],
+            )
+        )
+
+    # Flash and monitor require a serial port.
     selected_port = select_port(scan_serial_ports())
     if not selected_port:
         sys.exit(1)
 
-    print(f"\n✅ Selected Port: \033[1;32m{selected_port}\033[0m")
+    print(f"\nSelected Port: {selected_port}")
 
+    # Build + Flash + Monitor
     if action == "1":
         board = get_target_board()
 
         print("\n" + "-" * 50)
-        print(f"📦 Step 1/2: Building board '{board}'...")
+        print(f"Step 1/2: Building board '{board}'...")
         print("-" * 50)
+
         build_return_code = run_command(
             [idf_python, "scripts/build.py", board],
         )
         if build_return_code != 0:
-            print("\n❌ Build failed! Please check compiler errors above.")
+            print("\nBuild failed. Fix the compiler errors before flashing.")
+            show_build_errors()
             sys.exit(build_return_code)
 
         print("\n" + "-" * 50)
-        print(f"⚡ Step 2/2: Flashing & Monitoring on {selected_port}...")
+        print(f"Step 2/2: Flashing and monitoring {selected_port}...")
         print("-" * 50)
-        sys.exit(run_command(["idf.py", "-p", selected_port, "flash", "monitor"]))
 
+        sys.exit(
+            run_command(
+                ["idf.py", "-p", selected_port, "flash", "monitor"],
+            )
+        )
+
+    # Flash only
+    if action == "3":
+        print("\n" + "-" * 50)
+        print(f"Flashing {selected_port}...")
+        print("-" * 50)
+
+        sys.exit(
+            run_command(
+                ["idf.py", "-p", selected_port, "flash"],
+            )
+        )
+
+    # Monitor only
     print("\n" + "-" * 50)
-    print(f"📺 Opening Serial Monitor on {selected_port} (Ctrl+] to exit)...")
+    print(f"Opening serial monitor on {selected_port} (Ctrl+] to exit)...")
     print("-" * 50)
-    sys.exit(run_command(["idf.py", "-p", selected_port, "monitor"]))
+
+    sys.exit(
+        run_command(
+            ["idf.py", "-p", selected_port, "monitor"],
+        )
+    )
 
 
 if __name__ == "__main__":

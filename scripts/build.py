@@ -1350,6 +1350,11 @@ def _configure_build(
     defaults = []
     if Path("sdkconfig.defaults").exists():
         defaults.append("sdkconfig.defaults")
+
+    local_defaults = Path("sdkconfig.defaults.local")
+    if local_defaults.exists():
+        defaults.append(local_defaults.as_posix())
+
     defaults.append(fragment.as_posix())
     _run_idf(
         f"-DIDF_TARGET={target}",

@@ -21,3 +21,5 @@ mmap_generate_*.h
 main/secrets.h
 main/tools/secrets.h
 build.log
+sdkconfig.defaults.local
+sdkconfig.save
