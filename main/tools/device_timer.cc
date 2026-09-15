@@ -272,3 +272,65 @@ void RegisterDeviceTimerTools(McpServer& server) {
                        return result;
                    });
 }
+
+DeviceTimerStatus GetDeviceTimerStatus() {
+    return {
+        .active = g_timer.active,
+        .alarm_active = g_timer.alarm_active,
+        .remaining_seconds = RemainingSeconds(),
+        .label = g_timer.label,
+    };
+}
+
+bool StartDeviceTimer(int duration_seconds, const std::string& label, std::string& error_message) {
+    if (duration_seconds < kMinDurationSeconds || duration_seconds > kMaxDurationSeconds) {
+        error_message = "Duration must be between 1 second and 24 hours";
+        return false;
+    }
+
+    try {
+        EnsureTimerCreated();
+
+        StopActiveTimerIfNeeded();
+        StopAlarmIfNeeded();
+
+        g_timer.active = true;
+        g_timer.alarm_active = false;
+        g_timer.label = NormalizedLabel(label);
+        g_timer.deadline_us =
+            NowUs() + static_cast<int64_t>(duration_seconds) * kMicrosecondsPerSecond;
+
+        const esp_err_t error = esp_timer_start_once(
+            g_timer.handle, static_cast<uint64_t>(duration_seconds) * kMicrosecondsPerSecond);
+
+        if (error != ESP_OK) {
+            g_timer.active = false;
+            g_timer.deadline_us = 0;
+            error_message = std::string("Unable to start timer: ") + esp_err_to_name(error);
+            return false;
+        }
+
+        ESP_LOGI(TAG, "Timer started from dashboard: duration=%d label=%s", duration_seconds,
+                 g_timer.label.c_str());
+
+        return true;
+    } catch (const std::exception& error) {
+        error_message = error.what();
+        return false;
+    }
+}
+
+bool CancelDeviceTimer() {
+    const bool was_active = g_timer.active || g_timer.alarm_active;
+
+    StopActiveTimerIfNeeded();
+    StopAlarmIfNeeded();
+
+    g_timer.active = false;
+    g_timer.alarm_active = false;
+    g_timer.deadline_us = 0;
+    g_timer.label = "Timer";
+
+    ESP_LOGI(TAG, "Timer cancelled from dashboard");
+    return was_active;
+}
