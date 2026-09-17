@@ -1,4 +1,3 @@
-#include "display.h"
 #include <esp_err.h>
 #include <esp_log.h>
 #include <cstdlib>
@@ -8,6 +7,7 @@
 #include "assets/lang_config.h"
 #include "audio_codec.h"
 #include "board.h"
+#include "lcd_display.h"
 #include "settings.h"
 
 #define TAG "Display"

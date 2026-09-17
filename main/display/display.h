@@ -3,6 +3,7 @@
 
 #include "emoji_collection.h"
 #include "text_glyph.h"
+#include "wall_e_idle.h"
 
 #ifndef CONFIG_USE_EMOTE_MESSAGE_STYLE
 #define HAVE_LVGL 1
