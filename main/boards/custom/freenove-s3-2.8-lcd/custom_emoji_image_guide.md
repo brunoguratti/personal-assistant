@@ -328,28 +328,6 @@ Use the serial port shown by your machine. The port may change after reconnectin
 
 A successful result should show the custom image when the state enters the emotion you changed, without a watchdog reset and without a white background.
 
-## 10. Quick test by reusing wall_e_idle
-
-For rapid avatar experiments, reuse the existing working `wall_e_idle` symbol instead of adding new code.
-
-The project includes a helper script:
-
-```bash
-./scripts/test_wall_e_idle_avatar.sh assets-src/wall-e/my_avatar.png --flash
-```
-
-The helper script:
-
-- Resizes a square PNG to 200 x 200
-- Generates `RGB565A8`
-- Uses the symbol `wall_e_idle`
-- Backs up the current `main/display/wall_e_idle.c`
-- Replaces the active asset
-- Builds the firmware
-- Flashes and opens the monitor when `--flash` is passed
-
-For a permanent named custom emotion, follow sections 2 through 9 instead.
-
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |

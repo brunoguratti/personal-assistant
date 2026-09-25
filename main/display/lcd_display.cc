@@ -3,7 +3,6 @@
 #include "gif/lvgl_gif.h"
 #include "lvgl_theme.h"
 #include "settings.h"
-#include "wall_e_idle.h"
 
 #include <esp_err.h>
 #include <esp_log.h>
@@ -80,7 +79,7 @@ LcdDisplay::LcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_
 
     // Load theme from settings
     Settings settings("display", false);
-    std::string theme_name = settings.GetString("theme", "light");
+    std::string theme_name = settings.GetString("theme", "dark");
     current_theme_ = LvglThemeManager::GetInstance().GetTheme(theme_name);
 
     // Create a timer to hide the preview image
@@ -1111,22 +1110,6 @@ void LcdDisplay::SetEmotion(const char* emotion) {
                      "emoji image not created)",
                      emotion);
         }
-        return;
-    }
-
-    // WALL-E uses the existing emoji image widget, so it has no competing
-    // overlay and follows the display's established LVGL locking model.
-    if (emotion != nullptr && strcmp(emotion, "wall_e_idle") == 0) {
-        DisplayLockGuard lock(this);
-
-        if (gif_controller_) {
-            gif_controller_->Stop();
-            gif_controller_.reset();
-        }
-
-        lv_image_set_src(emoji_image_, &wall_e_idle);
-        lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
         return;
     }
 

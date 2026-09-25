@@ -24,90 +24,7 @@ constexpr char kTag[] = "StatusWebServer";
 
 httpd_handle_t server_handle = nullptr;
 
-constexpr size_t kMaxGatewayResponseBytes = 12 * 1024;
 constexpr size_t kMaxTimerRequestBytes = 256;
-constexpr size_t kMaxOwnerLength = 64;
-
-struct GatewayResponse {
-    std::string body;
-    bool too_large = false;
-};
-
-const char* GetGatewayBaseUrl() { return CONFIG_PERSONAL_GATEWAY_BASE_URL; }
-
-bool HasGatewayToken() { return CONFIG_PERSONAL_GATEWAY_BEARER_TOKEN[0] != '\0'; }
-
-bool IsSafeOwner(const std::string& value) {
-    if (value.empty() || value.size() > kMaxOwnerLength) {
-        return false;
-    }
-
-    for (const unsigned char character : value) {
-        if (!(std::isalnum(character) || character == '_' || character == '-')) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-bool GetQueryValue(httpd_req_t* request, const char* key, std::string& value) {
-    const size_t query_length = httpd_req_get_url_query_len(request);
-
-    if (query_length == 0 || query_length > 256) {
-        return false;
-    }
-
-    char query[257] = {};
-    if (httpd_req_get_url_query_str(request, query, sizeof(query)) != ESP_OK) {
-        return false;
-    }
-
-    char decoded[128] = {};
-    if (httpd_query_key_value(query, key, decoded, sizeof(decoded)) != ESP_OK) {
-        return false;
-    }
-
-    value = decoded;
-    return true;
-}
-
-bool GetOwnerFromQuery(httpd_req_t* request, std::string& owner) {
-    return GetQueryValue(request, "owner", owner) && IsSafeOwner(owner);
-}
-
-bool GetNoteIdFromQuery(httpd_req_t* request, int& note_id) {
-    std::string raw_note_id;
-
-    if (!GetQueryValue(request, "id", raw_note_id) || raw_note_id.empty() ||
-        raw_note_id.size() > 10) {
-        return false;
-    }
-
-    for (const unsigned char character : raw_note_id) {
-        if (!std::isdigit(character)) {
-            return false;
-        }
-    }
-
-    char* end = nullptr;
-    const long parsed = std::strtol(raw_note_id.c_str(), &end, 10);
-
-    if (end == nullptr || *end != '\0' || parsed <= 0 || parsed > INT32_MAX) {
-        return false;
-    }
-
-    note_id = static_cast<int>(parsed);
-    return true;
-}
-
-esp_err_t SendPlainError(httpd_req_t* request, const char* status, const char* message) {
-    httpd_resp_set_status(request, status);
-    httpd_resp_set_type(request, "text/plain");
-    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
-    return httpd_resp_send(request, message, HTTPD_RESP_USE_STRLEN);
-}
-
 esp_err_t SendJson(httpd_req_t* request, const std::string& json, const char* status = nullptr) {
     if (status != nullptr) {
         httpd_resp_set_status(request, status);
@@ -129,25 +46,6 @@ std::string BuildJsonString(const cJSON* root) {
     return json;
 }
 
-esp_err_t GatewayHttpEventHandler(esp_http_client_event_t* event) {
-    if (event->event_id != HTTP_EVENT_ON_DATA || event->user_data == nullptr) {
-        return ESP_OK;
-    }
-
-    auto* response = static_cast<GatewayResponse*>(event->user_data);
-
-    if (event->data_len <= 0 ||
-        response->body.size() + static_cast<size_t>(event->data_len) > kMaxGatewayResponseBytes) {
-        response->too_large = true;
-        return ESP_FAIL;
-    }
-
-    response->body.append(static_cast<const char*>(event->data),
-                          static_cast<size_t>(event->data_len));
-
-    return ESP_OK;
-}
-
 std::string GetDeviceIpAddress() {
     esp_netif_t* netif = esp_netif_get_default_netif();
 
@@ -166,119 +64,6 @@ std::string GetDeviceIpAddress() {
     }
 
     return std::string(ip_address);
-}
-
-bool IsSuccessfulHttpStatus(int status) { return status >= 200 && status < 300; }
-
-esp_err_t ForwardGatewayResponse(httpd_req_t* request, int upstream_status,
-                                 const GatewayResponse& response) {
-    if (upstream_status == 204 && response.body.empty()) {
-        httpd_resp_set_status(request, "204 No Content");
-        httpd_resp_set_hdr(request, "Cache-Control", "no-store");
-        return httpd_resp_send(request, nullptr, 0);
-    }
-
-    if (IsSuccessfulHttpStatus(upstream_status)) {
-        return SendJson(request, response.body.empty() ? "{}" : response.body, "200 OK");
-    }
-
-    cJSON* error = cJSON_CreateObject();
-    if (error == nullptr) {
-        return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR,
-                                   "Unable to build gateway error response");
-    }
-
-    cJSON_AddStringToObject(error, "error", "Gateway request failed");
-    cJSON_AddNumberToObject(error, "upstream_status", upstream_status);
-
-    const std::string json = BuildJsonString(error);
-    cJSON_Delete(error);
-
-    const char* status = "502 Bad Gateway";
-
-    if (upstream_status == 400) {
-        status = "400 Bad Request";
-    } else if (upstream_status == 401) {
-        status = "401 Unauthorized";
-    } else if (upstream_status == 403) {
-        status = "403 Forbidden";
-    } else if (upstream_status == 404) {
-        status = "404 Not Found";
-    } else if (upstream_status == 422) {
-        status = "422 Unprocessable Content";
-    }
-
-    return SendJson(request, json.empty() ? "{\"error\":\"Gateway request failed\"}" : json,
-                    status);
-}
-
-esp_err_t PerformGatewayRequest(httpd_req_t* request, esp_http_client_method_t method,
-                                const std::string& url) {
-    if (!HasGatewayToken()) {
-        ESP_LOGW(kTag, "Gateway bearer token is not configured");
-        return SendPlainError(request, "503 Service Unavailable",
-                              "Gateway bearer token is not configured");
-    }
-
-    GatewayResponse response;
-
-    esp_http_client_config_t config = {};
-    config.url = url.c_str();
-    config.method = method;
-    config.event_handler = GatewayHttpEventHandler;
-    config.user_data = &response;
-    config.timeout_ms = 5000;
-    config.buffer_size = 1024;
-    config.buffer_size_tx = 512;
-    config.auth_type = HTTP_AUTH_TYPE_NONE;
-    config.disable_auto_redirect = true;
-    config.max_authorization_retries = -1;
-
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (client == nullptr) {
-        ESP_LOGE(kTag, "Could not create gateway HTTP client");
-        return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR,
-                                   "Could not create gateway client");
-    }
-
-    const std::string authorization = std::string("Bearer ") + CONFIG_PERSONAL_GATEWAY_BEARER_TOKEN;
-
-    const esp_err_t header_result =
-        esp_http_client_set_header(client, "Authorization", authorization.c_str());
-
-    if (header_result != ESP_OK) {
-        ESP_LOGE(kTag, "Could not set gateway authorization: %s", esp_err_to_name(header_result));
-
-        esp_http_client_cleanup(client);
-
-        return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR,
-                                   "Could not set gateway authorization");
-    }
-
-    ESP_LOGI(kTag, "Forwarding gateway request: method=%d", static_cast<int>(method));
-
-    const esp_err_t perform_result = esp_http_client_perform(client);
-    const int upstream_status = esp_http_client_get_status_code(client);
-
-    ESP_LOGI(kTag, "Gateway response: status=%d, result=%s, bytes=%u", upstream_status,
-             esp_err_to_name(perform_result), static_cast<unsigned int>(response.body.size()));
-
-    esp_http_client_cleanup(client);
-
-    if (perform_result != ESP_OK || response.too_large) {
-        ESP_LOGW(kTag, "Gateway request failed: result=%s, too_large=%d",
-                 esp_err_to_name(perform_result), response.too_large);
-
-        return SendPlainError(request, "502 Bad Gateway",
-                              response.too_large ? "Gateway response was too large"
-                                                 : "Could not contact personal gateway");
-    }
-
-    if (upstream_status <= 0) {
-        return SendPlainError(request, "502 Bad Gateway", "Gateway returned no HTTP status");
-    }
-
-    return ForwardGatewayResponse(request, upstream_status, response);
 }
 
 bool ReadRequestBody(httpd_req_t* request, char* buffer, size_t buffer_size,
@@ -417,16 +202,11 @@ a { color: inherit; text-decoration: none; }
     <a href="/">Health</a>
   </nav>
   <div class="grid">
-    <a class="card tool-card" href="/tools/timer">
-      <div class="label">Local device</div>
-      <h2>Timer</h2>
-      <p class="muted">Start, monitor, or cancel a timer running on the device.</p>
-    </a>
-    <a class="card tool-card" href="/tools/notes">
-      <div class="label">Personal gateway</div>
-      <h2>Notes</h2>
-      <p class="muted">Browse notes for an owner and delete a note when needed.</p>
-    </a>
+      <a class="card tool-card" href="/tools/timer">
+    <div class="label">Local device</div>
+    <h2>Timer</h2>
+    <p class="muted">Start, monitor, or cancel a timer running on the device.</p>
+  </a>
   </div>
 </main>
 </body>
@@ -551,217 +331,6 @@ setInterval(refreshTimer, 1000);
 </html>
 )HTML";
 
-constexpr char kNotesHtml[] = R"HTML(
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Notes · XiaoZhi Dashboard</title>
-<style>
-:root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-* { box-sizing: border-box; }
-body { background: #10131a; color: #edf2f7; margin: 0; padding: 20px; }
-main { max-width: 820px; margin: auto; }
-h1 { margin: 0 0 6px; font-size: 1.65rem; }
-.nav { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 20px; }
-.nav a { background: #1b202b; border: 1px solid #30394a; border-radius: 7px; color: #cbd5e1; font-weight: 700; padding: 8px 11px; text-decoration: none; }
-.nav a:hover { background: #2563eb; border-color: #2563eb; color: white; }
-.card { background: #1b202b; border: 1px solid #30394a; border-radius: 12px; padding: 16px; }
-.label { color: #a0aec0; font-size: .78rem; font-weight: 700; letter-spacing: .08em; margin-bottom: 7px; text-transform: uppercase; }
-.muted, .message { color: #a0aec0; font-size: .9rem; }
-.row { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
-.field { flex: 1 1 220px; }
-select { background: #10131a; border: 1px solid #4a5568; border-radius: 7px; color: #edf2f7; font: inherit; padding: 9px 10px; width: 100%; }
-button { background: #2563eb; border: 0; border-radius: 7px; color: white; cursor: pointer; font: inherit; font-weight: 700; padding: 9px 12px; }
-button:hover { background: #1d4ed8; }
-button:disabled { cursor: wait; opacity: .55; }
-button.delete { background: #b91c1c; }
-button.delete:hover { background: #991b1b; }
-.notes-list { display: grid; gap: 10px; margin-top: 14px; }
-.note { background: #10131a; border: 1px solid #30394a; border-radius: 8px; padding: 12px; }
-.note-header { align-items: flex-start; display: flex; gap: 12px; justify-content: space-between; }
-.note-title { color: #f8fafc; font-weight: 700; margin-bottom: 5px; }
-.note-content { color: #cbd5e1; font-size: .9rem; line-height: 1.4; white-space: pre-wrap; }
-.note-tags { color: #93c5fd; font-size: .8rem; margin-top: 8px; }
-.small { font-size: .85rem; padding: 7px 9px; }
-</style>
-</head>
-<body>
-<main>
-  <h1>Personal notes</h1>
-  <div class="muted">Select an owner to browse notes from your personal gateway.</div>
-  <nav class="nav">
-    <a href="/">Health</a>
-    <a href="/tools">Tools</a>
-  </nav>
-  <section class="card">
-    <div class="label">Owner</div>
-    <div class="row">
-      <label class="field">
-        <select id="owner-select" aria-label="Owner">
-          <option value="bruno">Bruno</option>
-          <option value="tai">Tai</option>
-        </select>
-      </label>
-      <button id="refresh-notes-button" type="button">Refresh notes</button>
-    </div>
-    <div id="notes-state" class="message">Loading notes…</div>
-    <div id="notes-list" class="notes-list"></div>
-  </section>
-</main>
-<script>
-const ownerSelect = document.getElementById("owner-select");
-const state = document.getElementById("notes-state");
-const list = document.getElementById("notes-list");
-const refreshButton = document.getElementById("refresh-notes-button");
-
-function setState(message) {
-  state.textContent = message;
-}
-
-async function refreshNotes() {
-  const owner = ownerSelect.value;
-  list.replaceChildren();
-
-  if (!owner) {
-    setState("Select an owner first.");
-    return;
-  }
-
-  localStorage.setItem("xiaozhi-notes-owner", owner);
-  refreshButton.disabled = true;
-
-  try {
-    const response = await fetch(
-      `/api/gateway/notes?owner=${encodeURIComponent(owner)}`,
-      { cache: "no-store" }
-    );
-
-    if (!response.ok) {
-      throw new Error(`Gateway returned HTTP ${response.status}`);
-    }
-
-    const data = await response.json();
-    const notes = Array.isArray(data.notes) ? data.notes : [];
-    const count = Number.isFinite(data.count) ? data.count : notes.length;
-
-    if (notes.length === 0) {
-      setState("No notes found.");
-      return;
-    }
-
-    setState(`${count} note${count === 1 ? "" : "s"} for ${data.owner || owner}`);
-
-    for (const note of notes) {
-      renderNote(note, owner);
-    }
-  } catch (error) {
-    list.replaceChildren();
-    setState(`Notes unavailable: ${error.message}`);
-  } finally {
-    refreshButton.disabled = false;
-  }
-}
-
-function renderNote(note, owner) {
-  const item = document.createElement("article");
-  item.className = "note";
-
-  const header = document.createElement("div");
-  header.className = "note-header";
-
-  const text = document.createElement("div");
-
-  const title = document.createElement("div");
-  title.className = "note-title";
-  title.textContent = note.title || "Untitled note";
-
-  const content = document.createElement("div");
-  content.className = "note-content";
-  content.textContent = note.content || "";
-
-  text.append(title, content);
-  header.append(text);
-
-  if (Number.isInteger(note.id) && note.id > 0) {
-    const deleteButton = document.createElement("button");
-    deleteButton.type = "button";
-    deleteButton.className = "delete small";
-    deleteButton.textContent = "Delete";
-
-    deleteButton.addEventListener("click", () => {
-      deleteNote(note.id, owner, note.title || "Untitled note", deleteButton);
-    });
-
-    header.append(deleteButton);
-  }
-
-  item.append(header);
-
-  if (Array.isArray(note.tags) && note.tags.length > 0) {
-    const tags = document.createElement("div");
-    tags.className = "note-tags";
-    tags.textContent = note.tags.map((tag) => `#${tag}`).join(" ");
-    item.append(tags);
-  }
-
-  list.append(item);
-}
-
-async function deleteNote(noteId, owner, title, button) {
-  if (!window.confirm(`Delete "${title}"?`)) {
-    return;
-  }
-
-  button.disabled = true;
-  setState(`Deleting "${title}"…`);
-
-  try {
-    const response = await fetch(
-      `/api/gateway/notes?owner=${encodeURIComponent(owner)}&id=${encodeURIComponent(noteId)}`,
-      { method: "DELETE" }
-    );
-
-    if (!response.ok) {
-      let detail = `HTTP ${response.status}`;
-
-      try {
-        const payload = await response.json();
-        detail = payload.error || detail;
-      } catch (_) {
-      }
-
-      throw new Error(detail);
-    }
-
-    setState(`Deleted "${title}".`);
-    await refreshNotes();
-  } catch (error) {
-    button.disabled = false;
-    setState(`Could not delete note: ${error.message}`);
-  }
-}
-
-const rememberedOwner = localStorage.getItem("xiaozhi-notes-owner");
-
-if (
-  rememberedOwner &&
-  [...ownerSelect.options].some((option) => option.value === rememberedOwner)
-) {
-  ownerSelect.value = rememberedOwner;
-}
-
-ownerSelect.addEventListener("change", refreshNotes);
-refreshButton.addEventListener("click", refreshNotes);
-
-refreshNotes();
-setInterval(refreshNotes, 30000);
-</script>
-</body>
-</html>
-)HTML";
-
 esp_err_t HtmlPageHandler(httpd_req_t* request, const std::string& html) {
     httpd_resp_set_type(request, "text/html");
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
@@ -771,44 +340,6 @@ esp_err_t HtmlPageHandler(httpd_req_t* request, const std::string& html) {
 esp_err_t ToolsPageHandler(httpd_req_t* request) { return HtmlPageHandler(request, kToolsHtml); }
 
 esp_err_t TimerPageHandler(httpd_req_t* request) { return HtmlPageHandler(request, kTimerHtml); }
-
-esp_err_t NotesPageHandler(httpd_req_t* request) { return HtmlPageHandler(request, kNotesHtml); }
-
-esp_err_t GatewayNotesHandler(httpd_req_t* request) {
-    std::string owner;
-
-    if (!GetOwnerFromQuery(request, owner)) {
-        return SendPlainError(
-            request, "400 Bad Request",
-            "owner must contain 1 to 64 letters, numbers, underscores, or hyphens");
-    }
-
-    const std::string url = std::string(GetGatewayBaseUrl()) + "/v1/notes?owner=" + owner;
-
-    return PerformGatewayRequest(request, HTTP_METHOD_GET, url);
-}
-
-esp_err_t GatewayDeleteNoteHandler(httpd_req_t* request) {
-    std::string owner;
-    int note_id = 0;
-
-    if (!GetOwnerFromQuery(request, owner)) {
-        return SendPlainError(
-            request, "400 Bad Request",
-            "owner must contain 1 to 64 letters, numbers, underscores, or hyphens");
-    }
-
-    if (!GetNoteIdFromQuery(request, note_id)) {
-        return SendPlainError(request, "400 Bad Request", "id must be a positive integer");
-    }
-
-    // Confirmed gateway contract: DELETE /v1/notes/{note_id}.
-    // The owner is validated locally but is not sent to the upstream delete route.
-    const std::string url = std::string(GetGatewayBaseUrl()) + "/v1/notes/" +
-                            std::to_string(note_id) + "?owner=" + owner;
-
-    return PerformGatewayRequest(request, HTTP_METHOD_DELETE, url);
-}
 
 esp_err_t HealthHandler(httpd_req_t* request) {
     const int64_t uptime_seconds = esp_timer_get_time() / 1000000LL;
@@ -951,13 +482,6 @@ const httpd_uri_t kTimerPageUri = {
     .user_ctx = nullptr,
 };
 
-const httpd_uri_t kNotesPageUri = {
-    .uri = "/tools/notes",
-    .method = HTTP_GET,
-    .handler = NotesPageHandler,
-    .user_ctx = nullptr,
-};
-
 const httpd_uri_t kHealthUri = {
     .uri = "/api/health",
     .method = HTTP_GET,
@@ -983,20 +507,6 @@ const httpd_uri_t kTimerCancelUri = {
     .uri = "/api/timer",
     .method = HTTP_DELETE,
     .handler = TimerCancelHandler,
-    .user_ctx = nullptr,
-};
-
-const httpd_uri_t kGatewayNotesUri = {
-    .uri = "/api/gateway/notes",
-    .method = HTTP_GET,
-    .handler = GatewayNotesHandler,
-    .user_ctx = nullptr,
-};
-
-const httpd_uri_t kGatewayDeleteNoteUri = {
-    .uri = "/api/gateway/notes",
-    .method = HTTP_DELETE,
-    .handler = GatewayDeleteNoteHandler,
     .user_ctx = nullptr,
 };
 
@@ -1041,13 +551,10 @@ void StatusWebServer::Start() {
         RegisterUri(server_handle, kHealthDashboardUri, "GET /") &&
         RegisterUri(server_handle, kToolsPageUri, "GET /tools") &&
         RegisterUri(server_handle, kTimerPageUri, "GET /tools/timer") &&
-        RegisterUri(server_handle, kNotesPageUri, "GET /tools/notes") &&
         RegisterUri(server_handle, kHealthUri, "GET /api/health") &&
         RegisterUri(server_handle, kTimerStatusUri, "GET /api/timer") &&
         RegisterUri(server_handle, kTimerStartUri, "POST /api/timer") &&
-        RegisterUri(server_handle, kTimerCancelUri, "DELETE /api/timer") &&
-        RegisterUri(server_handle, kGatewayNotesUri, "GET /api/gateway/notes") &&
-        RegisterUri(server_handle, kGatewayDeleteNoteUri, "DELETE /api/gateway/notes");
+        RegisterUri(server_handle, kTimerCancelUri, "DELETE /api/timer");
 
     if (!registered) {
         httpd_stop(server_handle);
@@ -1067,5 +574,4 @@ void StatusWebServer::Start() {
     ESP_LOGI(kTag, "Health dashboard: http://%s/", ip_address.c_str());
     ESP_LOGI(kTag, "Tools: http://%s/tools", ip_address.c_str());
     ESP_LOGI(kTag, "Timer: http://%s/tools/timer", ip_address.c_str());
-    ESP_LOGI(kTag, "Notes: http://%s/tools/notes", ip_address.c_str());
 }

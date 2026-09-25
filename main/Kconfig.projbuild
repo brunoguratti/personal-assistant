@@ -22,7 +22,7 @@ config PERSONAL_GATEWAY_BEARER_TOKEN
 
 choice
     prompt "Flash Assets"
-    default FLASH_DEFAULT_ASSETS if !USE_EMOTE_MESSAGE_STYLE
+    default FLASH_CUSTOM_ASSETS if !USE_EMOTE_MESSAGE_STYLE
     default FLASH_EXPRESSION_ASSETS if USE_EMOTE_MESSAGE_STYLE
     help
         Select the assets to flash.
