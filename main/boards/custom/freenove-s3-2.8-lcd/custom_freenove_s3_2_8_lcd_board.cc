@@ -6,6 +6,7 @@
 #include "display/lcd_display.h"
 #include "led/single_led.h"
 #include "mcp_server.h"
+#include "power_save_timer.h"
 #include "system_reset.h"
 #include "wifi_board.h"
 
@@ -22,14 +23,15 @@ class CustomFreenoveS3_2_8_LcdBoard : public WifiBoard {
 private:
     Button boot_button_;
     LcdDisplay* display_ = nullptr;
+    PowerSaveTimer* power_save_timer_ = nullptr;
 
     void InitializeSpi() {
         spi_bus_config_t buscfg = {};
         buscfg.mosi_io_num = DISPLAY_MOSI_PIN;
-        buscfg.miso_io_num = GPIO_NUM_NC;
         buscfg.sclk_io_num = DISPLAY_CLK_PIN;
         buscfg.quadwp_io_num = GPIO_NUM_NC;
         buscfg.quadhd_io_num = GPIO_NUM_NC;
+        buscfg.miso_io_num = GPIO_NUM_NC;
         buscfg.max_transfer_sz = DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(uint16_t);
         ESP_ERROR_CHECK(spi_bus_initialize(SPI3_HOST, &buscfg, SPI_DMA_CH_AUTO));
     }
@@ -67,8 +69,27 @@ private:
                                      DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
     }
 
+    void InitializePowerSaveTimer() {
+        // Screen-only timeout: leave the CPU, Wi-Fi and audio available.
+        power_save_timer_ = new PowerSaveTimer(-1, 60, -1);
+        power_save_timer_->OnEnterSleepMode([this]() {
+            if (auto* backlight = GetBacklight()) {
+                backlight->SetBrightness(0);
+            }
+        });
+        power_save_timer_->OnExitSleepMode([this]() {
+            if (auto* backlight = GetBacklight()) {
+                backlight->RestoreBrightness();
+            }
+        });
+        power_save_timer_->SetEnabled(true);
+    }
+
     void InitializeButtons() {
         boot_button_.OnClick([this]() {
+            if (power_save_timer_ != nullptr) {
+                power_save_timer_->WakeUp();
+            }
             auto& app = Application::GetInstance();
             if (app.GetDeviceState() == kDeviceStateStarting) {
                 EnterWifiConfigMode();
@@ -85,6 +106,7 @@ public:
         InitializeButtons();
         if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {
             GetBacklight()->RestoreBrightness();
+            InitializePowerSaveTimer();
         }
     }
 
@@ -108,6 +130,13 @@ public:
             return &backlight;
         }
         return nullptr;
+    }
+
+    virtual void SetPowerSaveLevel(PowerSaveLevel level) override {
+        if (level != PowerSaveLevel::LOW_POWER && power_save_timer_ != nullptr) {
+            power_save_timer_->WakeUp();
+        }
+        WifiBoard::SetPowerSaveLevel(level);
     }
 };
 
