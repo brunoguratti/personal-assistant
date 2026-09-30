@@ -16,13 +16,67 @@
 #include <esp_system.h>
 #include <esp_timer.h>
 
+#include "application.h"
+#include "audio_codec.h"
+#include "backlight.h"
+#include "board.h"
+#include "display.h"
 #include "device_timer.h"
+#include "settings.h"
 #include "system_info.h"
 
 namespace {
 constexpr char kTag[] = "StatusWebServer";
 
 httpd_handle_t server_handle = nullptr;
+
+constexpr size_t kMaxDisplayRequestBytes = 384;
+constexpr size_t kMaxDisplayTextBytes = 120;
+
+bool IsControlAuthorized(httpd_req_t* request) {
+    const std::string token = CONFIG_WALL_E_CONTROL_TOKEN;
+    if (token.empty()) {
+        return false;
+    }
+
+    const size_t length = httpd_req_get_hdr_value_len(request, "Authorization");
+    if (length == 0 || length > 255) {
+        return false;
+    }
+
+    char header[256] = {};
+    if (httpd_req_get_hdr_value_str(request, "Authorization", header, sizeof(header)) != ESP_OK) {
+        return false;
+    }
+
+    return std::string(header) == "Bearer " + token;
+}
+
+constexpr size_t kMaxAnnouncementRequestBytes = 512;
+constexpr size_t kMaxAnnouncementTextBytes = 120;
+
+bool IsAllowedAnnouncementUrl(const std::string& url) {
+    const std::string prefix = CONFIG_WALL_E_ANNOUNCEMENT_AUDIO_BASE_URL;
+    if (prefix.size() < 8 || prefix.compare(0, 7, "http://") != 0 ||
+        prefix.back() != '/' || url.size() > 256 ||
+        url.compare(0, prefix.size(), prefix) != 0) {
+        return false;
+    }
+
+    const std::string filename = url.substr(prefix.size());
+    if (filename.size() < 5 || filename.size() > 100 ||
+        filename.compare(filename.size() - 4, 4, ".ogg") != 0 ||
+        filename.find("..") != std::string::npos) {
+        return false;
+    }
+
+    for (unsigned char ch : filename) {
+        if (!std::isalnum(ch) && ch != '-' && ch != '_' && ch != '.') {
+            return false;
+        }
+    }
+    return true;
+}
 
 constexpr size_t kMaxTimerRequestBytes = 256;
 esp_err_t SendJson(httpd_req_t* request, const std::string& json, const char* status = nullptr) {
@@ -452,6 +506,214 @@ esp_err_t TimerStartHandler(httpd_req_t* request) {
     return TimerStatusHandler(request);
 }
 
+esp_err_t DisplayMessageHandler(httpd_req_t* request) {
+    if (!IsControlAuthorized(request)) {
+        return SendJson(request, R"({"error":"unauthorized"})", "401 Unauthorized");
+    }
+
+    if (request->content_len <= 0 || request->content_len > kMaxDisplayRequestBytes) {
+        return SendJson(request, R"({"error":"invalid_body_size"})", "400 Bad Request");
+    }
+
+    char body[kMaxDisplayRequestBytes + 1] = {};
+    size_t received_length = 0;
+    if (!ReadRequestBody(request, body, sizeof(body), received_length)) {
+        return SendJson(request, R"({"error":"body_read_failed"})", "400 Bad Request");
+    }
+
+    cJSON* root = cJSON_ParseWithLength(body, received_length);
+    if (root == nullptr) {
+        return SendJson(request, R"({"error":"invalid_json"})", "400 Bad Request");
+    }
+
+    const cJSON* text_value = cJSON_GetObjectItemCaseSensitive(root, "text");
+    const cJSON* duration_value = cJSON_GetObjectItemCaseSensitive(root, "duration_ms");
+
+    bool valid = cJSON_IsObject(root) && cJSON_IsString(text_value) &&
+                 text_value->valuestring != nullptr;
+    std::string text;
+    int duration_ms = 5000;
+
+    if (valid) {
+        text = text_value->valuestring;
+        valid = !text.empty() && text.size() <= kMaxDisplayTextBytes &&
+                strlen(text_value->valuestring) == text.size();
+    }
+
+    if (valid && duration_value != nullptr) {
+        valid = cJSON_IsNumber(duration_value) &&
+                duration_value->valuedouble >= 1000 &&
+                duration_value->valuedouble <= 30000 &&
+                duration_value->valuedouble == duration_value->valueint;
+        if (valid) {
+            duration_ms = duration_value->valueint;
+        }
+    }
+
+    cJSON_Delete(root);
+
+    if (!valid) {
+        return SendJson(request, R"({"error":"invalid_text_or_duration"})",
+                        "400 Bad Request");
+    }
+
+    Application::GetInstance().Schedule(
+        [text = std::move(text), duration_ms]() {
+            auto& board = Board::GetInstance();
+            board.WakeDisplay();
+            board.GetDisplay()->ShowNotification(text, duration_ms);
+        });
+
+    return SendJson(request, R"({"accepted":true})", "202 Accepted");
+}
+
+esp_err_t SettingsGetHandler(httpd_req_t* request) {
+    if (!IsControlAuthorized(request)) {
+        return SendJson(request, R"({"error":"unauthorized"})", "401 Unauthorized");
+    }
+
+    auto& board = Board::GetInstance();
+    auto* codec = board.GetAudioCodec();
+    auto* backlight = board.GetBacklight();
+    if (codec == nullptr || backlight == nullptr) {
+        return SendJson(request, R"({"error":"control_unavailable"})",
+                        "503 Service Unavailable");
+    }
+
+    Settings display_settings("display");
+    int brightness = display_settings.GetInt("brightness", 75);
+    if (brightness <= 0) {
+        brightness = 10;
+    }
+
+    cJSON* root = cJSON_CreateObject();
+    if (root == nullptr) {
+        return SendJson(request, R"({"error":"allocation_failed"})",
+                        "500 Internal Server Error");
+    }
+    cJSON_AddNumberToObject(root, "volume", codec->output_volume());
+    cJSON_AddNumberToObject(root, "brightness", brightness);
+    const std::string json = BuildJsonString(root);
+    cJSON_Delete(root);
+    if (json.empty()) {
+        return SendJson(request, R"({"error":"serialization_failed"})",
+                        "500 Internal Server Error");
+    }
+    return SendJson(request, json);
+}
+
+esp_err_t SettingsSetHandler(httpd_req_t* request) {
+    if (!IsControlAuthorized(request)) {
+        return SendJson(request, R"({"error":"unauthorized"})", "401 Unauthorized");
+    }
+    if (request->content_len <= 0 || request->content_len > 96) {
+        return SendJson(request, R"({"error":"invalid_body_size"})", "400 Bad Request");
+    }
+
+    char body[97] = {};
+    size_t received_length = 0;
+    if (!ReadRequestBody(request, body, sizeof(body), received_length)) {
+        return SendJson(request, R"({"error":"body_read_failed"})", "400 Bad Request");
+    }
+
+    cJSON* root = cJSON_ParseWithLength(body, received_length);
+    if (root == nullptr) {
+        return SendJson(request, R"({"error":"invalid_json"})", "400 Bad Request");
+    }
+
+    const cJSON* volume = cJSON_GetObjectItemCaseSensitive(root, "volume");
+    const cJSON* brightness = cJSON_GetObjectItemCaseSensitive(root, "brightness");
+    const bool is_volume = volume != nullptr && brightness == nullptr;
+    const cJSON* value = is_volume ? volume : brightness;
+    const int minimum = is_volume ? 1 : 10;
+    const bool valid = cJSON_IsObject(root) && cJSON_GetArraySize(root) == 1 &&
+                       (is_volume || (brightness != nullptr && volume == nullptr)) &&
+                       cJSON_IsNumber(value) &&
+                       value->valuedouble >= minimum && value->valuedouble <= 100 &&
+                       value->valuedouble == value->valueint;
+    const int level = valid ? value->valueint : 0;
+    cJSON_Delete(root);
+
+    if (!valid) {
+        return SendJson(request, R"({"error":"invalid_setting"})", "400 Bad Request");
+    }
+
+    auto& board = Board::GetInstance();
+    if ((is_volume && board.GetAudioCodec() == nullptr) ||
+        (!is_volume && board.GetBacklight() == nullptr)) {
+        return SendJson(request, R"({"error":"control_unavailable"})",
+                        "503 Service Unavailable");
+    }
+
+    Application::GetInstance().Schedule([is_volume, level]() {
+        auto& target = Board::GetInstance();
+        if (is_volume) {
+            target.GetAudioCodec()->SetOutputVolume(level);
+        } else {
+            target.WakeDisplay();
+            target.GetBacklight()->SetBrightness(static_cast<uint8_t>(level), true);
+        }
+    });
+    return SendJson(request, R"({"accepted":true})", "202 Accepted");
+}
+
+esp_err_t AnnouncementHandler(httpd_req_t* request) {
+    if (!IsControlAuthorized(request)) {
+        return SendJson(request, R"({"error":"unauthorized"})", "401 Unauthorized");
+    }
+
+    if (request->content_len <= 0 ||
+        request->content_len > kMaxAnnouncementRequestBytes) {
+        return SendJson(request, R"({"error":"invalid_body_size"})", "400 Bad Request");
+    }
+
+    char body[kMaxAnnouncementRequestBytes + 1] = {};
+    size_t received_length = 0;
+    if (!ReadRequestBody(request, body, sizeof(body), received_length)) {
+        return SendJson(request, R"({"error":"body_read_failed"})", "400 Bad Request");
+    }
+
+    cJSON* root = cJSON_ParseWithLength(body, received_length);
+    if (root == nullptr) {
+        return SendJson(request, R"({"error":"invalid_json"})", "400 Bad Request");
+    }
+
+    const cJSON* url_value = cJSON_GetObjectItemCaseSensitive(root, "audio_url");
+    const cJSON* text_value = cJSON_GetObjectItemCaseSensitive(root, "text");
+
+    bool valid = cJSON_IsObject(root) && cJSON_IsString(url_value) &&
+                 url_value->valuestring != nullptr;
+    std::string audio_url;
+    std::string text;
+
+    if (valid) {
+        audio_url = url_value->valuestring;
+        valid = IsAllowedAnnouncementUrl(audio_url);
+    }
+
+    if (valid && text_value != nullptr) {
+        valid = cJSON_IsString(text_value) && text_value->valuestring != nullptr;
+        if (valid) {
+            text = text_value->valuestring;
+            valid = text.size() <= kMaxAnnouncementTextBytes;
+        }
+    }
+
+    cJSON_Delete(root);
+    if (!valid) {
+        return SendJson(request, R"({"error":"invalid_audio_url_or_text"})",
+                        "400 Bad Request");
+    }
+
+    auto& app = Application::GetInstance();
+    if (app.GetDeviceState() != kDeviceStateIdle) {
+        return SendJson(request, R"({"error":"device_busy"})", "409 Conflict");
+    }
+
+    app.QueueLocalAnnouncement(std::move(audio_url), std::move(text));
+    return SendJson(request, R"({"accepted":true})", "202 Accepted");
+}
+
 esp_err_t TimerCancelHandler(httpd_req_t* request) {
     CancelDeviceTimer();
     return TimerStatusHandler(request);
@@ -510,6 +772,34 @@ const httpd_uri_t kTimerCancelUri = {
     .user_ctx = nullptr,
 };
 
+const httpd_uri_t kDisplayMessageUri = {
+    .uri = "/api/display/message",
+    .method = HTTP_POST,
+    .handler = DisplayMessageHandler,
+    .user_ctx = nullptr,
+};
+
+const httpd_uri_t kAnnouncementUri = {
+    .uri = "/api/announce",
+    .method = HTTP_POST,
+    .handler = AnnouncementHandler,
+    .user_ctx = nullptr,
+};
+
+const httpd_uri_t kSettingsGetUri = {
+    .uri = "/api/settings",
+    .method = HTTP_GET,
+    .handler = SettingsGetHandler,
+    .user_ctx = nullptr,
+};
+
+const httpd_uri_t kSettingsSetUri = {
+    .uri = "/api/settings",
+    .method = HTTP_POST,
+    .handler = SettingsSetHandler,
+    .user_ctx = nullptr,
+};
+
 bool RegisterUri(httpd_handle_t server, const httpd_uri_t& uri, const char* name) {
     const esp_err_t result = httpd_register_uri_handler(server, &uri);
 
@@ -535,7 +825,7 @@ void StatusWebServer::Start() {
     }
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 10;
+    config.max_uri_handlers = 14;
     config.stack_size = 8192;
     config.lru_purge_enable = true;
 
@@ -554,6 +844,10 @@ void StatusWebServer::Start() {
         RegisterUri(server_handle, kHealthUri, "GET /api/health") &&
         RegisterUri(server_handle, kTimerStatusUri, "GET /api/timer") &&
         RegisterUri(server_handle, kTimerStartUri, "POST /api/timer") &&
+        RegisterUri(server_handle, kDisplayMessageUri, "POST /api/display/message") &&
+        RegisterUri(server_handle, kAnnouncementUri, "POST /api/announce") &&
+        RegisterUri(server_handle, kSettingsGetUri, "GET /api/settings") &&
+        RegisterUri(server_handle, kSettingsSetUri, "POST /api/settings") &&
         RegisterUri(server_handle, kTimerCancelUri, "DELETE /api/timer");
 
     if (!registered) {

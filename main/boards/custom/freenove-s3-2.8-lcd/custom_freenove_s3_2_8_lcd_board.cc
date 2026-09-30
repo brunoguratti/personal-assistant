@@ -124,6 +124,12 @@ public:
 
     virtual Display* GetDisplay() override { return display_; }
 
+    void WakeDisplay() override {
+        if (power_save_timer_ != nullptr) {
+            power_save_timer_->WakeUp();
+        }
+    }
+
     virtual Backlight* GetBacklight() override {
         if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {
             static PwmBacklight backlight(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT);

@@ -80,6 +80,8 @@ public:
     /**
      * Schedule a callback to be executed in the main task
      */
+    void QueueLocalAnnouncement(std::string audio_url, std::string text);
+
     void Schedule(std::function<void()>&& callback);
 
     /**

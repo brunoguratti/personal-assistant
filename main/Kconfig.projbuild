@@ -20,6 +20,23 @@ config PERSONAL_GATEWAY_BEARER_TOKEN
         Bearer token used only by the device when it requests the Personal
         MCP Dashboard API. Do not put this value in dashboard HTML or Git.
 
+config WALL_E_CONTROL_TOKEN
+    string "Wall-E inbound HTTP control token"
+    default ""
+    help
+        Token required for remote display and announcement POST requests.
+        Use a different token from PERSONAL_GATEWAY_BEARER_TOKEN.
+        Keep sdkconfig out of Git and do not expose this API to the internet.
+
+config WALL_E_ANNOUNCEMENT_AUDIO_BASE_URL
+    string "Allowed announcement audio URL prefix"
+    default ""
+    help
+        Trusted LAN URL ending in /audio/, for example
+        http://10.0.0.170:8766/audio/
+        Only a simple .ogg filename beneath this prefix is accepted.
+        Empty disables remote announcements.
+
 choice
     prompt "Flash Assets"
     default FLASH_CUSTOM_ASSETS if !USE_EMOTE_MESSAGE_STYLE
