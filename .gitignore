@@ -1,4 +1,5 @@
 tmp/
+_upstream/
 components/
 managed_components/
 build/
@@ -7,6 +8,8 @@ dist/
 .devcontainer/
 sdkconfig.old
 sdkconfig
+sdkconfig.backup
+sdkconfig.defaults.backup
 dependencies.lock
 .env
 releases/

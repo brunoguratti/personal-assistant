@@ -25,6 +25,10 @@
 #define DISPLAY_RST_PIN GPIO_NUM_14
 #define DISPLAY_BACKLIGHT_PIN GPIO_NUM_13
 
+// --- ILI9341 onboard microSD (shares display SPI bus) ---
+#define SD_MISO_PIN GPIO_NUM_15
+#define SD_CS_PIN   GPIO_NUM_16
+
 // Start false. Change to true if the display/backlight behaves inverted.
 #define DISPLAY_BACKLIGHT_OUTPUT_INVERT false
 

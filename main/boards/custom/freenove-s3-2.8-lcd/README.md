@@ -2,6 +2,11 @@
 
 This custom board configuration is for the standalone **Freenove ESP32-S3 Dev Board** connected to an **ILI9341 2.8" TFT SPI LCD**, **INMP441 I2S Microphone**, and **MAX98357A I2S Amplifier**.
 
+> For the full enclosure wiring reference (per-module hookups, power/distribution
+> hub, amplifier capacitor, and a pre-power checklist), see
+> [docs/hardware-wiring.md](../../../../docs/hardware-wiring.md). The tables below
+> are a quick pinout summary.
+
 ---
 
 ## Wiring Pinout Guide
